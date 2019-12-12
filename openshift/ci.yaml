@@ -1,0 +1,226 @@
+apiVersion: v1
+kind: Template
+labels:
+  app: jenkins-agent-centos
+  template: jenkins-agent-centos-jenkins-pipeline
+metadata:
+  annotations:
+    description: Jenkins Agent CentOS Image - Jenkinsfile
+      see https://github.com/faust64/docker-jenkins-agent-centos
+    iconClass: icon-openshift
+    openshift.io/display-name: Jenkins Agent CentOS CI
+    tags: jenkins-agent-centos
+  name: jenkins-agent-centos-jenkins-pipeline
+objects:
+- apiVersion: v1
+  kind: BuildConfig
+  metadata:
+    annotations:
+      description: Builds Jenkins Agent CentOS images
+    name: jenkinsagentcentos-jenkins-pipeline
+  spec:
+    strategy:
+      jenkinsPipelineStrategy:
+        jenkinsfile: |-
+          def gitCommitMsg = ''
+          def templateMark = 'jac-jenkins-ci'
+          def templateSel  = 'jenkins-ci-mark'
+          pipeline {
+              agent {
+                  node { label 'maven' }
+              }
+              options { timeout(time: 130, unit: 'MINUTES') }
+              parameters {
+                  string(defaultValue: 'master', description: 'Jenkins Agent CentOS Docker Image - Source Git Branch', name: 'jenkinsagentcentosBranch')
+                  string(defaultValue: 'master', description: 'Jenkins Agent CentOS Docker Image - Source Git Hash', name: 'jenkinsagentcentosHash')
+                  string(defaultValue: '${GIT_SOURCE_HOST}/faust64/docker-jenkins-agent-centos.git', description: 'Jenkins Agent CentOS Docker Image - Source Git Repository', name: 'jenkinsagentcentosRepo')
+                  string(defaultValue: '3', description: 'Max Retry', name: 'jobMaxRetry')
+                  string(defaultValue: '1', description: 'Retry Count', name: 'jobRetryCount')
+              }
+              stages {
+                  stage('pre-cleanup') {
+                      steps {
+                          script {
+                              openshift.withCluster() {
+                                  openshift.withProject() {
+                                      echo "Using project: ${openshift.project()}"
+                                      echo "cleaning up previous assets for jac-${params.jenkinsagentcentosHash}"
+                                      openshift.selector("all", [ "${templateSel}": "${templateMark}-${params.jenkinsagentcentosHash}" ]).delete()
+                                      openshift.selector("secrets", [ "${templateSel}": "${templateMark}-${params.jenkinsagentcentosHash}" ]).delete()
+                                  }
+                              }
+                          }
+                      }
+                  }
+                  stage('create') {
+                      steps {
+                          script {
+                              openshift.withCluster() {
+                                  openshift.withProject() {
+                                      def namespace = "${openshift.project()}"
+                                      try {
+                                          timeout(10) {
+                                              def cloneProto = "http"
+                                              def created
+                                              def objectsFromTemplate
+                                              def privateRepo = false
+                                              def repoHost = params.jenkinsagentcentosRepo.split('/')[0]
+                                              def templatePath = "/tmp/workspace/${namespace}/${namespace}-jenkinsagentcentos-jenkins-pipeline/tmpjac${params.jenkinsagentcentosBranch}/openshift"
+                                              sh "git config --global http.sslVerify false"
+                                              sh "rm -fr tmpjac${params.jenkinsagentcentosBranch}; mkdir -p tmpjac${params.jenkinsagentcentosBranch}"
+                                              dir ("tmpjac${params.jenkinsagentcentosBranch}") {
+                                                  try {
+                                                      withCredentials([string(credentialsId: "git-${repoHost}", variable: 'GIT_TOKEN')]) {
+                                                          cloneProto = "https"
+                                                          privateRepo = true
+                                                          echo "cloning ${params.jenkinsagentcentosRepo} over https, using ${repoHost} token"
+                                                          try { git([ branch: "${params.jenkinsagentcentosBranch}", url: "https://${GIT_TOKEN}@${params.jenkinsagentcentosRepo}" ]) }
+                                                          catch(e2) {
+                                                              echo "Failed cloning ${params.jenkinsagentcentosRepo}#${params.jenkinsagentcentosBranch} - ${e2}"
+                                                              throw e2
+                                                          }
+                                                      }
+                                                  } catch(e) {
+                                                      if (privateRepo != true) {
+                                                          echo "caught ${e} - assuming no credentials required"
+                                                          echo "cloning ${params.jenkinsagentcentosRepo} over http"
+                                                          try { git([ branch: "${params.jenkinsagentcentosBranch}", url: "http://${params.jenkinsagentcentosRepo}" ]) }
+                                                          catch(e2) {
+                                                              echo "Failed cloning ${params.jenkinsagentcentosRepo}#${params.jenkinsagentcentosBranch} - ${e2}"
+                                                              throw e2
+                                                          }
+                                                      } else { throw e }
+                                                  }
+                                                  try {
+                                                      gitCommitMsg = sh(returnStdout: true, script: "git log -n 1").trim()
+                                                  } catch(e) { echo "In non-critical catch block resolving commit message - ${e}" }
+                                              }
+                                              try { sh "test -d ${templatePath}" }
+                                              catch (e) {
+                                                  echo "Could not find ./openshift in ${params.jenkinsagentcentosRepo}#${params.jenkinsagentcentosBranch}"
+                                                  throw e
+                                              }
+                                              echo "Processing JenkinsAgentCentOS:${params.jenkinsagentcentosHash}, from ${repoHost}, tagging to ${params.jenkinsagentcentosBranch}"
+                                              try {
+                                                  echo " == Creating ImageStream =="
+                                                  objectsFromTemplate = openshift.process("-f", "${templatePath}/imagestream.yaml")
+                                                  echo "The template will create ${objectsFromTemplate.size()} objects"
+                                                  created = openshift.apply(objectsFromTemplate)
+                                                  created.withEach { echo "Created ${it.name()} with labels ${it.object().metadata.labels}" }
+                                              } catch(e) { echo "In non-critical catch block while creating ImageStream - ${e}" }
+                                              echo " == Creating BuildConfigs =="
+                                              if (privateRepo) {
+                                                  withCredentials([string(credentialsId: "git-${repoHost}", variable: 'GIT_TOKEN')]) {
+                                                      objectsFromTemplate = openshift.process("-f", "${templatePath}/build-with-secret.yaml", '-p', "GIT_DEPLOYMENT_TOKEN=${GIT_TOKEN}",
+                                                          '-p', "JAC_REPOSITORY_REF=${params.jenkinsagentcentosHash}", '-p', "JAC_REPOSITORY_URL=${cloneProto}://${params.jenkinsagentcentosRepo}")
+                                                  }
+                                              } else {
+                                                  objectsFromTemplate = openshift.process("-f", "${templatePath}/build.yaml",
+                                                      '-p', "JAC_REPOSITORY_REF=${params.jenkinsagentcentosHash}", '-p', "JAC_REPOSITORY_URL=${cloneProto}://${params.jenkinsagentcentosRepo}")
+                                              }
+                                              echo "The template will create ${objectsFromTemplate.size()} objects"
+                                              for (o in objectsFromTemplate) { o.metadata.labels["${templateSel}"] = "${templateMark}-${params.jenkinsagentcentosHash}" }
+                                              created = openshift.apply(objectsFromTemplate)
+                                              created.withEach { echo "Created ${it.name()} from template with labels ${it.object().metadata.labels}" }
+                                          }
+                                      } catch(e) {
+                                          echo "In catch block while creating resources - ${e}"
+                                          throw e
+                                      }
+                                  }
+                              }
+                          }
+                      }
+                  }
+                  stage('build') {
+                      steps {
+                          script {
+                              openshift.withCluster() {
+                                  openshift.withProject() {
+                                      try {
+                                          timeout(90) {
+                                              echo "watching jac-${params.jenkinsagentcentosHash} docker image build"
+                                              def builds = openshift.selector("bc", [ name: "jac-${params.jenkinsagentcentosHash}" ]).related('builds')
+                                              builds.untilEach(1) { return (it.object().status.phase == "Complete") }
+                                          }
+                                      } catch(e) {
+                                          echo "In catch block while building Docker image - ${e}"
+                                          throw e
+                                      }
+                                  }
+                              }
+                          }
+                      }
+                  }
+                  stage('tag') {
+                      steps {
+                          script {
+                              if ("${params.jenkinsagentcentosBranch}" == "${params.jenkinsagentcentosHash}") { echo "skipping tag - source matches target" }
+                              else {
+                                  openshift.withCluster() {
+                                      openshift.withProject() {
+                                          try {
+                                              timeout(5) {
+                                                  def namespace = "${openshift.project()}"
+                                                  retry(3) {
+                                                      sh """
+                                                      oc login https://kubernetes.default.svc.cluster.local --certificate-authority=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt --token=\$(cat /var/run/secrets/kubernetes.io/serviceaccount/token) > /dev/null 2>&1
+                                                      oc describe -n ${namespace} imagestreamtag jenkins-agent-centos:${params.jenkinsagentcentosHash} || exit 1
+                                                      oc tag -n ${namespace} jenkins-agent-centos:${params.jenkinsagentcentosHash} jenkins-agent-centos:${params.jenkinsagentcentosBranch}
+                                                      """
+                                                  }
+                                              }
+                                          } catch(e) {
+                                              echo "In catch block while tagging Jenkins Agent CentOS image - ${e}"
+                                              throw e
+                                          }
+                                      }
+                                  }
+                              }
+                          }
+                      }
+                  }
+              }
+              post {
+                  always {
+                      script {
+                          openshift.withCluster() {
+                              openshift.withProject() {
+                                  def namespace   = "${openshift.project()}"
+                                  def postJobName = "${namespace}/${namespace}-post-triggers-jenkins-pipeline"
+                                  currentBuild.description = """
+                                  ${params.jenkinsagentcentosRepo} ${params.jenkinsagentcentosBranch} (try ${params.jobRetryCount}/${params.jobMaxRetry})
+                                  ${gitCommitMsg}
+                                  """.stripIndent()
+                                  echo "cleaning up assets for jac-${params.jenkinsagentcentosHash}"
+                                  sh "rm -fr /tmp/workspace/${namespace}/${namespace}-jenkinsagentcentos-jenkins-pipeline/tmpjac${params.jenkinsagentcentosBranch}"
+                                  openshift.selector("all", [ "${templateSel}": "${templateMark}-${params.jenkinsagentcentosHash}" ]).delete()
+                                  openshift.selector("secrets", [ "${templateSel}": "${templateMark}-${params.jenkinsagentcentosHash}" ]).delete()
+                                  def jobParams = [
+                                          [$class: 'StringParameterValue', name: "jobMaxRetry", value: params.jobMaxRetry],
+                                          [$class: 'StringParameterValue', name: "jobRetryCount", value: params.jobRetryCount],
+                                          [$class: 'StringParameterValue', name: "jobStatus", value: currentBuild.currentResult],
+                                          [$class: 'StringParameterValue', name: "sourceBranch", value: params.jenkinsagentcentosBranch],
+                                          [$class: 'StringParameterValue', name: "sourceComponent", value: "jenkinsagentcentos"],
+                                          [$class: 'StringParameterValue', name: "sourceImageStream", value: "jenkins-agent-centos"],
+                                          [$class: 'StringParameterValue', name: "sourceRef", value: params.jenkinsagentcentosHash],
+                                          [$class: 'StringParameterValue', name: "sourceRepo", value: params.jenkinsagentcentosRepo]
+                                      ]
+                                  try { build job: postJobName, parameters: jobParams, propagate: false, wait: false }
+                                  catch(e) { echo "caught ${e} starting Job post-process" }
+                              }
+                          }
+                      }
+                  }
+                  changed { echo "changed?" }
+                  failure { echo "Build failed (${params.jobRetryCount} out of ${params.jobMaxRetry})" }
+                  success { echo "success!" }
+                  unstable { echo "unstable?" }
+              }
+          }
+      type: JenkinsPipeline
+parameters:
+- name: GIT_SOURCE_HOST
+  description: Git FQDN we would build images from
+  displayName: Git
+  value: github.com
