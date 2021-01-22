@@ -1,0 +1,15 @@
+[centos8-baseos]
+name = CentOS 8 BaseOS
+baseurl = http://mirror.centos.org/centos/8/BaseOS/x86_64/os/
+enabled = 1
+gpgcheck = 0
+[centos8-appstream]
+name = CentOS 8 AppStream
+baseurl = http://mirror.centos.org/centos/8/AppStream/x86_64/os/
+enabled = 1
+gpgcheck = 0
+[el8-everything]
+name = EPEL 8 Everything
+baseurl = https://dl.fedoraproject.org/pub/epel/8/Everything/x86_64
+enabled = 1
+gpgcheck = 0

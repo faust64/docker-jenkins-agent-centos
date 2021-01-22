@@ -1,0 +1,27 @@
+FROM quay.io/openshift/origin-jenkins-agent-base:latest
+
+LABEL com.redhat.component="jenkins-agent-centos" \
+      io.k8s.description="The jenkins agent centos image has the tools buildings RPM packages on top of the jenkins slave base image." \
+      io.k8s.display-name="Jenkins Agent - CentOS8" \
+      io.openshift.tags="openshift,jenkins,agent,centos" \
+      architecture="x86_64" \
+      name="ci/jenkins-agent-centos" \
+      maintainer="Samuel MARTIN MORO <faust64@gmail.com>" \
+      help="For more information visit https://github.com/faust64/docker-jenkins-agent-centos" \
+      version="1.0"
+
+COPY config/* /
+
+# Install Build Dependencies
+RUN rm /etc/yum.repos.d/*.repo \
+    && mv /el8.repo /etc/yum.repos.d/ \
+    && dnf -y install epel-release \
+    && if test "$DO_UPGRADE"; then \
+	dnf -y upgrade; \
+    fi \
+    && dnf -y group install "Development Tools" \
+    && dnf -y install rpm-build rpmdevtools make wget git curl \
+    && yum clean all -y \
+    && rm -rf /var/cache/yum /usr/share/doc /usr/share/man
+
+USER 1001
